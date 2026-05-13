@@ -1,565 +1,445 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import numpy as np
 
-# --------------------------------------------------
-# PAGE CONFIG
-# --------------------------------------------------
+st.set_page_config(page_title="Cloud Kitchen PNL", layout="wide", initial_sidebar_state="collapsed")
 
-st.set_page_config(
-    page_title="Cloud Kitchen Dashboard",
-    layout="wide"
-)
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-st.title("Cloud Kitchen PNL Dashboard")
+    .stApp { background-color: #f2ede4; }
 
-st.write(
-    "Interactive dashboard for analyzing kitchen level "
-    "profitability and variance performance."
-)
+    .dash-title {
+        background: #1a1a1a;
+        color: #fff;
+        padding: 12px 20px;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        border-radius: 4px;
+        margin-bottom: 16px;
+    }
 
-# --------------------------------------------------
-# LOAD DATA
-# --------------------------------------------------
+    .filter-panel {
+        background: #fdf6e3;
+        border: 1px solid #e8d8a0;
+        border-radius: 6px;
+        padding: 14px 16px;
+        margin-bottom: 12px;
+    }
 
-@st.cache_data
+    .section-label {
+        background: #1a1a1a;
+        color: white;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 12px;
+        display: inline-block;
+        border-radius: 3px;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+    }
+
+    .inline-warn {
+        background: #fff8e1;
+        border-left: 3px solid #f0a500;
+        padding: 8px 12px;
+        font-size: 13px;
+        border-radius: 0 4px 4px 0;
+        color: #5a4000;
+    }
+
+    .inline-info {
+        background: #e8f4fd;
+        border-left: 3px solid #2196f3;
+        padding: 8px 12px;
+        font-size: 13px;
+        border-radius: 0 4px 4px 0;
+        color: #1a3a4a;
+    }
+
+    /* tab bar */
+    .stTabs [data-baseweb="tab-list"] {
+        background-color: #1a1a1a;
+        border-radius: 6px 6px 0 0;
+        gap: 2px;
+        padding: 4px 6px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #aaa;
+        font-size: 13px;
+        font-weight: 500;
+        padding: 6px 16px;
+        border-radius: 4px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #f0a500 !important;
+        color: #1a1a1a !important;
+        font-weight: 600;
+    }
+
+    div[data-testid="stMetric"] {
+        background: #fff;
+        border: 1px solid #ddd6c8;
+        border-radius: 6px;
+        padding: 12px;
+    }
+    div[data-testid="stMetricValue"] { font-size: 20px !important; font-weight: 700; }
+
+    .stMultiSelect [data-baseweb="select"] { background: #fffdf5; }
+    div[data-testid="stDataFrame"] { border: 1px solid #ddd6c8; border-radius: 4px; }
+
+    header[data-testid="stHeader"] { background: transparent; }
+    .block-container { padding-top: 1rem; padding-bottom: 2rem; }
+    hr { border: none; border-top: 1px solid #ddd6c8; margin: 16px 0; }
+</style>
+""", unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=300)
 def load_data():
+    df = pd.read_excel("Kittchen PNL Data.xlsx", header=1)
 
-    data = pd.read_excel(
-        "Kittchen PNL Data.xlsx",
-        header=1
+    for col in ["ORDER COUNT", "CART SALES", "DISCOUNT", "NET REVENUE",
+                "IDEAL FOOD COST", "GROSS MARGIN", "KITCHEN EBITDA", "VARIANCE"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    mo = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+          "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+
+    def sort_key(m):
+        try:
+            p = m.split("-")
+            return int(p[1]) * 100 + mo.get(p[0], 0)
+        except:
+            return 0
+
+    df["_msort"] = df["MONTH"].apply(sort_key)
+    df = df.sort_values("_msort")
+
+    df["GM%"]      = (df["GROSS MARGIN"] / df["NET REVENUE"] * 100).round(2)
+    df["CM"]       = df["GROSS MARGIN"]
+    df["CM%"]      = df["GM%"]
+    df["EBITDA%"]  = (df["KITCHEN EBITDA"] / df["NET REVENUE"] * 100).round(2)
+    # variance as % of food cost — makes more sense than % of revenue for wastage tracking
+    df["VARIANCE%"] = (df["VARIANCE"] / df["IDEAL FOOD COST"] * 100).round(2)
+
+    df["REV_BUCKET"] = pd.cut(
+        df["NET REVENUE"],
+        bins=[0, 1500000, 2500000, 3500000, 4500000, float("inf")],
+        labels=["Below INR 15 lacs", "INR 15 to 25 lacs", "INR 25 to 35 lacs",
+                "INR 35 to 45 lacs", "Above INR 45 lacs"]
     )
-
-    return data
+    df["VAR_BUCKET"] = pd.cut(
+        df["VARIANCE%"],
+        bins=[-np.inf, 2, 3, 5, np.inf],
+        labels=["(a) Var < 2%", "(b) Var 2% to 3%", "(c) Var 3% to 5%", "(d) Var > 5%"]
+    )
+    return df
 
 
 df = load_data()
+all_months = df.drop_duplicates("MONTH").sort_values("_msort")["MONTH"].tolist()
 
-# --------------------------------------------------
-# MONTH SORTING
-# --------------------------------------------------
 
-df["MONTH_DATE"] = pd.to_datetime(
-    df["MONTH"],
-    format="%b-%Y"
-)
+st.markdown('<div class="dash-title">☁ Cloud Kitchen PNL Dashboard</div>', unsafe_allow_html=True)
 
-df = df.sort_values("MONTH_DATE")
 
-# --------------------------------------------------
-# NUMERIC CONVERSION
-# --------------------------------------------------
+# global filters
+st.markdown('<div class="filter-panel">', unsafe_allow_html=True)
+a, b, c, d, e = st.columns(5)
+with a:
+    months = st.multiselect("Month", all_months, default=all_months)
+with b:
+    cities = st.multiselect("City", sorted(df["CITY"].unique()), default=sorted(df["CITY"].unique()))
+with c:
+    stores = st.multiselect("Store", sorted(df["STORE"].unique()), default=sorted(df["STORE"].unique()))
+with d:
+    rev_cohort = st.multiselect("Revenue Cohort", sorted(df["REVENUE COHORT"].unique()),
+                                default=sorted(df["REVENUE COHORT"].unique()))
+with e:
+    status_filter = st.multiselect("Status", list(df["STATUS"].unique()), default=list(df["STATUS"].unique()))
+st.markdown('</div>', unsafe_allow_html=True)
 
-numeric_columns = [
-    "ORDER COUNT",
-    "CART SALES",
-    "DISCOUNT",
-    "NET REVENUE",
-    "IDEAL FOOD COST",
-    "GROSS MARGIN",
-    "KITCHEN EBITDA",
-    "VARIANCE"
-]
+base = df[
+    df["MONTH"].isin(months) &
+    df["CITY"].isin(cities) &
+    df["STORE"].isin(stores) &
+    df["REVENUE COHORT"].isin(rev_cohort) &
+    df["STATUS"].isin(status_filter)
+].copy()
 
-for col in numeric_columns:
-
-    df[col] = pd.to_numeric(
-        df[col],
-        errors="coerce"
-    )
-
-# --------------------------------------------------
-# VARIANCE PERCENTAGE
-# --------------------------------------------------
-
-df["VARIANCE_PERCENT"] = (
-    df["VARIANCE"] /
-    df["NET REVENUE"]
-) * 100
-
-# --------------------------------------------------
-# TOP FILTERS
-# --------------------------------------------------
-
-st.markdown("---")
-
-filter1, filter2, filter3, filter4 = st.columns(4)
-
-with filter1:
-
-    selected_month = st.multiselect(
-        "Month",
-        options=df["MONTH"].drop_duplicates(),
-        default=df["MONTH"].drop_duplicates()
-    )
-
-with filter2:
-
-    selected_city = st.multiselect(
-        "City",
-        options=sorted(df["CITY"].unique()),
-        default=sorted(df["CITY"].unique())
-    )
-
-with filter3:
-
-    selected_store = st.multiselect(
-        "Store",
-        options=sorted(df["STORE"].unique()),
-        default=sorted(df["STORE"].unique())
-    )
-
-with filter4:
-
-    selected_revenue = st.multiselect(
-        "Revenue Cohort",
-        options=sorted(df["REVENUE COHORT"].unique()),
-        default=sorted(df["REVENUE COHORT"].unique())
-    )
-
-# --------------------------------------------------
-# FILTER DATA
-# --------------------------------------------------
-
-filtered_df = df[
-    (df["MONTH"].isin(selected_month)) &
-    (df["CITY"].isin(selected_city)) &
-    (df["STORE"].isin(selected_store)) &
-    (df["REVENUE COHORT"].isin(selected_revenue))
-]
-
-filtered_df = filtered_df.copy()
-
-# --------------------------------------------------
-# EMPTY DATA CHECK
-# --------------------------------------------------
-
-if filtered_df.empty:
-
-    st.warning(
-        "No data available for selected filters."
-    )
-
+if base.empty:
+    st.markdown('<div class="inline-warn">⚠ Nothing to show — try relaxing the filters.</div>', unsafe_allow_html=True)
     st.stop()
 
-# --------------------------------------------------
-# KPI SECTION
-# --------------------------------------------------
+
+# KPI strip
+m1, m2, m3, m4, m5 = st.columns(5)
+with m1:
+    st.metric("Net Revenue", f"₹ {base['NET REVENUE'].sum()/1e7:.2f} Cr")
+with m2:
+    st.metric("Total EBITDA", f"₹ {base['KITCHEN EBITDA'].sum()/1e5:.1f} L")
+with m3:
+    st.metric("Avg EBITDA %", f"{base['EBITDA%'].mean():.1f}%")
+with m4:
+    st.metric("Avg GM %", f"{base['GM%'].mean():.1f}%")
+with m5:
+    neg = base[base["KITCHEN EBITDA"] < 0]["STORE"].nunique()
+    st.metric("–ve EBITDA Stores", f"{neg} / {base['STORE'].nunique()}")
 
 st.markdown("---")
 
-total_revenue = filtered_df["NET REVENUE"].sum()
+tab1, tab2 = st.tabs(["  Dashboard 1 · Kitchen Level PNL  ", "  Dashboard 2 · Variance Level PNL  "])
 
-total_ebitda = filtered_df["KITCHEN EBITDA"].sum()
-
-total_orders = filtered_df["ORDER COUNT"].sum()
-
-avg_variance = filtered_df["VARIANCE_PERCENT"].mean()
-
-total_stores = filtered_df["STORE"].nunique()
-
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-
-with kpi1:
-
-    st.metric(
-        "Total Revenue",
-        f"₹ {total_revenue:,.0f}"
-    )
-
-with kpi2:
-
-    st.metric(
-        "Total EBITDA",
-        f"₹ {total_ebitda:,.0f}"
-    )
-
-with kpi3:
-
-    st.metric(
-        "Total Orders",
-        f"{total_orders:,.0f}"
-    )
-
-with kpi4:
-
-    st.metric(
-        "Average Variance %",
-        f"{avg_variance:.2f}%"
-    )
-
-with kpi5:
-
-    st.metric(
-        "Store Count",
-        total_stores
-    )
-
-# --------------------------------------------------
-# TABS
-# --------------------------------------------------
-
-tab1, tab2, tab3 = st.tabs([
-    "Kitchen Level PNL",
-    "Variance Level PNL",
-    "Store Analysis"
-])
-
-# ==================================================
-# TAB 1
-# ==================================================
 
 with tab1:
+    st.markdown('<span class="section-label">Kitchen Level PNL</span>', unsafe_allow_html=True)
 
-    st.subheader("Kitchen Level PNL")
+    st.markdown('<div class="filter-panel">', unsafe_allow_html=True)
+    left, mid, right = st.columns(3)
+    with left:
+        emin, emax = int(base["KITCHEN EBITDA"].min()), int(base["KITCHEN EBITDA"].max())
+        ebitda_rng = st.slider("EBITDA Range (Rs.)", emin, emax, (emin, emax), step=5000)
+    with mid:
+        rmin, rmax = int(base["NET REVENUE"].min()), int(base["NET REVENUE"].max())
+        rev_rng = st.slider("Net Revenue Range (Rs.)", rmin, rmax, (rmin, rmax), step=10000)
+    with right:
+        cmin, cmax = int(base["CM"].min()), int(base["CM"].max())
+        cm_rng = st.slider("CM Range (Rs.)", cmin, cmax, (cmin, cmax), step=10000)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3)
+    st.markdown('<div class="filter-panel">', unsafe_allow_html=True)
+    fa, fb, fc, fd, fe = st.columns(5)
+    with fa:
+        zone_filter = st.multiselect("Zone", sorted(df["ZONE MAPPING"].unique()),
+                                     default=sorted(df["ZONE MAPPING"].unique()), key="zone")
+    with fb:
+        ebitda_cat = st.multiselect("EBITDA Category", sorted(df["EBITDA CATEGORY"].unique()),
+                                    default=sorted(df["EBITDA CATEGORY"].unique()), key="ecat")
+    with fc:
+        ebitda_cohort = st.multiselect("EBITDA Cohort", sorted(df["EBITDA COHORT"].unique()),
+                                       default=sorted(df["EBITDA COHORT"].unique()), key="ecoh")
+    with fd:
+        cm_cohort = st.multiselect("CM Cohort", sorted(df["CM COHORT"].unique()),
+                                   default=sorted(df["CM COHORT"].unique()), key="cmcoh")
+    with fe:
+        d1_months = st.multiselect("Month", all_months, default=all_months, key="d1m")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with col1:
+    kdf = base[
+        base["ZONE MAPPING"].isin(zone_filter) &
+        base["EBITDA CATEGORY"].isin(ebitda_cat) &
+        base["EBITDA COHORT"].isin(ebitda_cohort) &
+        base["CM COHORT"].isin(cm_cohort) &
+        base["MONTH"].isin(d1_months) &
+        base["KITCHEN EBITDA"].between(ebitda_rng[0], ebitda_rng[1]) &
+        base["NET REVENUE"].between(rev_rng[0], rev_rng[1]) &
+        base["CM"].between(cm_rng[0], cm_rng[1])
+    ].copy()
 
-        ebitda_range = st.slider(
-            "Select EBITDA Range",
-            min_value=int(filtered_df["KITCHEN EBITDA"].min()),
-            max_value=int(filtered_df["KITCHEN EBITDA"].max()),
-            value=(
-                int(filtered_df["KITCHEN EBITDA"].min()),
-                int(filtered_df["KITCHEN EBITDA"].max())
-            )
-        )
-
-    with col2:
-
-        selected_ebitda_category = st.multiselect(
-            "EBITDA Category",
-            options=sorted(df["EBITDA CATEGORY"].unique()),
-            default=sorted(df["EBITDA CATEGORY"].unique())
-        )
-
-    with col3:
-
-        selected_ebitda_cohort = st.multiselect(
-            "EBITDA Cohort",
-            options=sorted(df["EBITDA COHORT"].unique()),
-            default=sorted(df["EBITDA COHORT"].unique())
-        )
-
-    selected_cm = st.multiselect(
-        "CM Cohort",
-        options=sorted(df["CM COHORT"].unique()),
-        default=sorted(df["CM COHORT"].unique())
-    )
-
-    kitchen_df = filtered_df[
-        (filtered_df["EBITDA CATEGORY"].isin(selected_ebitda_category)) &
-        (filtered_df["EBITDA COHORT"].isin(selected_ebitda_cohort)) &
-        (filtered_df["CM COHORT"].isin(selected_cm)) &
-        (
-            filtered_df["KITCHEN EBITDA"].between(
-                ebitda_range[0],
-                ebitda_range[1]
-            )
-        )
-    ]
-
-    if kitchen_df.empty:
-
-        st.warning(
-            "No Kitchen PNL data available."
-        )
-
+    if kdf.empty:
+        st.markdown('<div class="inline-warn">⚠ No records for this filter combination.</div>', unsafe_allow_html=True)
     else:
+        st.markdown(
+            f'<div class="inline-info">Showing <b>{len(kdf)}</b> records · '
+            f'<b>{kdf["STORE"].nunique()}</b> stores · <b>{kdf["MONTH"].nunique()}</b> months</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Kitchen Snapshot</span>', unsafe_allow_html=True)
 
-        display_columns = [
-            "MONTH",
-            "CITY",
-            "STORE",
-            "ORDER COUNT",
-            "NET REVENUE",
-            "GROSS MARGIN",
-            "KITCHEN EBITDA",
-            "VARIANCE_PERCENT",
-            "REVENUE COHORT",
-            "CM COHORT",
-            "EBITDA CATEGORY",
-            "EBITDA COHORT"
-        ]
-
-        display_df = kitchen_df[
-            display_columns
-        ].copy()
-
-        display_df = display_df.rename(
-            columns={
-                "VARIANCE_PERCENT": "VARIANCE %"
-            }
+        snap = kdf.groupby(["STORE", "MONTH"], as_index=False).agg(
+            net_rev=("NET REVENUE", "sum"),
+            gm_pct=("GM%", "mean"),
+            cm_pct=("CM%", "mean"),
+            ebitda=("KITCHEN EBITDA", "sum"),
+            ebitda_pct=("EBITDA%", "mean")
         )
 
-        def highlight_ebitda(val):
+        msort = {m: i for i, m in enumerate(all_months)}
+        active_months = sorted(snap["MONTH"].unique(), key=lambda x: msort.get(x, 99))
 
-            if val < 0:
-                return "background-color: #ffcccc"
+        parts = []
+        for m in active_months:
+            s = snap[snap["MONTH"] == m][["STORE","net_rev","gm_pct","cm_pct","ebitda","ebitda_pct"]].copy()
+            s.columns = ["STORE", (m,"Net Rev"), (m,"GM%"), (m,"CM%"), (m,"EBITDA"), (m,"EBITDA%")]
+            parts.append(s.set_index("STORE"))
 
-            return ""
+        if parts:
+            pivot = pd.concat(parts, axis=1)
+            pivot.columns = pd.MultiIndex.from_tuples(pivot.columns)
+            flat = pivot.reset_index().copy()
+            flat.columns = [f"{b} . {a}" if b else a for a, b in flat.columns]
 
-        def highlight_variance(val):
+            for col in flat.columns:
+                if col == "STORE":
+                    continue
+                if "%" in col:
+                    flat[col] = flat[col].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
+                elif "Net Rev" in col:
+                    flat[col] = flat[col].apply(lambda x: f"Rs.{x/100000:.1f}L" if pd.notna(x) else "-")
+                elif "EBITDA" in col:
+                    flat[col] = flat[col].apply(lambda x: f"Rs.{x:,.0f}" if pd.notna(x) else "-")
 
-            if val > 5:
-                return "background-color: #fff3cd"
+            def flag_negative(row):
+                out = [""] * len(row)
+                for i, col in enumerate(flat.columns):
+                    if "EBITDA" in col and "%" not in col:
+                        try:
+                            if float(row[col].replace("Rs.","").replace(",","")) < 0:
+                                out[i] = "background-color: #ffe0e0; color: #b00000; font-weight: 500"
+                        except:
+                            pass
+                return out
 
-            return ""
+            st.dataframe(flat.style.apply(flag_negative, axis=1), use_container_width=True, height=420)
 
-        styled_df = display_df.style.map(
-            highlight_ebitda,
-            subset=["KITCHEN EBITDA"]
-        ).map(
-            highlight_variance,
-            subset=["VARIANCE %"]
-        )
-
-        st.dataframe(
-            styled_df,
-            width="stretch"
-        )
-
-        st.markdown("---")
-
-        st.subheader("Kitchen Snapshot")
-
-        snapshot_table = pd.pivot_table(
-            kitchen_df,
-            values=[
-                "NET REVENUE",
-                "GROSS MARGIN",
-                "KITCHEN EBITDA"
-            ],
-            index="STORE",
-            columns="MONTH",
-            aggfunc="sum"
-        )
-
-        snapshot_table = snapshot_table.round(2)
-
-        st.dataframe(
-            snapshot_table,
-            width="stretch"
-        )
-
-        st.markdown("---")
-
-        chart1, chart2 = st.columns(2)
-
-        with chart1:
-
-            revenue_chart = px.bar(
-                kitchen_df.groupby(
-                    "STORE",
-                    as_index=False
-                )["NET REVENUE"].sum(),
-                x="STORE",
-                y="NET REVENUE",
-                title="Revenue by Store"
+        dl_col, info_col = st.columns([1, 3])
+        with dl_col:
+            st.download_button("Download Kitchen PNL", kdf.to_csv(index=False).encode(),
+                               "kitchen_pnl.csv", "text/csv")
+        with info_col:
+            top3 = kdf.groupby("STORE")["KITCHEN EBITDA"].sum().nlargest(3).index.tolist()
+            bot3 = kdf.groupby("STORE")["KITCHEN EBITDA"].sum().nsmallest(3).index.tolist()
+            st.markdown(
+                f'<div class="inline-info">Best EBITDA: {", ".join(top3)} &nbsp;·&nbsp; '
+                f'Watch list: {", ".join(bot3)}</div>',
+                unsafe_allow_html=True
             )
 
-            st.plotly_chart(
-                revenue_chart,
-                use_container_width=True
-            )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Monthly Aggregate</span>', unsafe_allow_html=True)
 
-        with chart2:
+        monthly = kdf.groupby("MONTH").agg(
+            Stores=("STORE", "nunique"),
+            Revenue=("NET REVENUE", "sum"),
+            EBITDA=("KITCHEN EBITDA", "sum"),
+            ebitda_pct=("EBITDA%", "mean"),
+            gm_pct=("GM%", "mean")
+        ).reindex([m for m in all_months if m in kdf["MONTH"].values])
 
-            monthly_summary = kitchen_df.groupby(
-                ["MONTH", "MONTH_DATE"],
-                as_index=False
-            )[[
-                "NET REVENUE",
-                "KITCHEN EBITDA"
-            ]].sum()
+        monthly["Net Revenue"] = monthly["Revenue"].map(lambda x: f"Rs.{x/100000:.1f}L")
+        monthly["EBITDA (Rs.)"]  = monthly["EBITDA"].map(lambda x: f"Rs.{x:,.0f}")
+        monthly["EBITDA %"]    = monthly["ebitda_pct"].map(lambda x: f"{x:.1f}%")
+        monthly["GM %"]        = monthly["gm_pct"].map(lambda x: f"{x:.1f}%")
 
-            monthly_summary = monthly_summary.sort_values(
-                "MONTH_DATE"
-            )
+        out = monthly[["Stores","Net Revenue","EBITDA (Rs.)","EBITDA %","GM %"]].reset_index()
+        out.columns = ["Month"] + list(out.columns[1:])
+        st.dataframe(out, use_container_width=True, hide_index=True)
 
-            trend_chart = px.line(
-                monthly_summary,
-                x="MONTH",
-                y=[
-                    "NET REVENUE",
-                    "KITCHEN EBITDA"
-                ],
-                markers=True,
-                title="Monthly Revenue and EBITDA Trend"
-            )
-
-            st.plotly_chart(
-                trend_chart,
-                use_container_width=True
-            )
-
-# ==================================================
-# TAB 2
-# ==================================================
 
 with tab2:
+    st.markdown('<span class="section-label">Variance Level PNL</span>', unsafe_allow_html=True)
 
-    st.subheader("Variance Level PNL")
+    st.markdown('<div class="filter-panel">', unsafe_allow_html=True)
+    vcol, mcol = st.columns([2, 3])
+    with vcol:
+        var_cats = ["(a) Var < 2%", "(b) Var 2% to 3%", "(c) Var 3% to 5%", "(d) Var > 5%"]
+        sel_vbuckets = st.multiselect("Variance Category", var_cats, default=var_cats)
+    with mcol:
+        var_months = st.multiselect("Month", all_months, default=all_months, key="vm")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    variance_bins = [0, 2, 3, 5, float("inf")]
+    vdf = base[base["VAR_BUCKET"].isin(sel_vbuckets) & base["MONTH"].isin(var_months)].copy()
 
-    variance_labels = [
-        "Var <2%",
-        "Var 2%-3%",
-        "Var 3%-5%",
-        "Var >5%"
-    ]
-
-    kitchen_df["VARIANCE BUCKET"] = pd.cut(
-        kitchen_df["VARIANCE_PERCENT"],
-        bins=variance_bins,
-        labels=variance_labels
-    )
-
-    selected_variance = st.multiselect(
-        "Variance Category",
-        options=variance_labels,
-        default=variance_labels
-    )
-
-    variance_df = kitchen_df[
-        kitchen_df["VARIANCE BUCKET"].isin(
-            selected_variance
-        )
-    ]
-
-    if variance_df.empty:
-
-        st.warning(
-            "No variance data available."
-        )
-
+    if vdf.empty:
+        st.markdown('<div class="inline-warn">⚠ No variance data for the selected filters.</div>', unsafe_allow_html=True)
     else:
+        v_months = [m for m in all_months if m in vdf["MONTH"].unique()]
 
-        st.subheader(
-            "Variance Heatmap"
-        )
+        # Sub-dashboard 1 — avg variance % by revenue cohort x month
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Sub-Dashboard 1 · Avg Variance % by Revenue Category</span>', unsafe_allow_html=True)
+        st.caption("Average variance % on food cost across revenue categories and months")
 
-        heatmap_df = pd.pivot_table(
-            variance_df,
-            values="VARIANCE_PERCENT",
-            index="REVENUE COHORT",
-            columns="MONTH",
-            aggfunc="mean"
-        )
+        v1 = pd.pivot_table(vdf, values="VARIANCE%", index="REVENUE COHORT",
+                            columns="MONTH", aggfunc="mean").reindex(columns=v_months)
+        v1.index.name = "Revenue Category"
 
-        heatmap_df = heatmap_df.round(2)
+        grand_avg = vdf.groupby("MONTH")["VARIANCE%"].mean()
+        v1_display = pd.concat([
+            v1,
+            pd.DataFrame([grand_avg.reindex(v_months).values], columns=v_months, index=["Grand Total"])
+        ])
 
-        heatmap_chart = px.imshow(
-            heatmap_df,
-            text_auto=True,
-            aspect="auto",
-            title="Average Variance Percentage Heatmap",
-            labels=dict(
-                color="Variance %"
-            )
-        )
+        def pct_fmt(x):
+            return "-" if pd.isna(x) else f"{x:.1f}%"
 
-        st.plotly_chart(
-            heatmap_chart,
+        st.dataframe(
+            v1_display.style
+                .format(pct_fmt)
+                .set_properties(**{"text-align": "center"})
+                .apply(lambda r: ["font-weight:bold; background:#f5f0e0" if r.name == "Grand Total"
+                                  else "" for _ in r], axis=1),
             use_container_width=True
         )
 
-        st.subheader(
-            "Average Variance % by Revenue Cohort"
-        )
+        dl, _ = st.columns([1, 4])
+        with dl:
+            st.download_button("Download", v1_display.to_csv().encode(),
+                               "variance_avg_pct.csv", "text/csv", key="dlv1")
 
-        heatmap_display = (
-            heatmap_df.astype(str) + "%"
-        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Sub-dashboard 2 — store count by revenue bucket x month
+        st.markdown('<span class="section-label">Sub-Dashboard 2 · Store Count by Revenue Bucket</span>', unsafe_allow_html=True)
+        st.caption("Number of kitchen stores per revenue range across months (variance filter applied above)")
+
+        rev_order = ["Below INR 15 lacs", "INR 15 to 25 lacs", "INR 25 to 35 lacs",
+                     "INR 35 to 45 lacs", "Above INR 45 lacs"]
+
+        v2 = pd.pivot_table(vdf, values="STORE", index="REV_BUCKET", columns="MONTH",
+                            aggfunc=pd.Series.nunique, fill_value=0)
+        v2 = v2.reindex(
+            index=[r for r in rev_order if r in v2.index],
+            columns=v_months
+        ).fillna(0).astype(int)
+        v2.index.name = "Revenue Category"
+
+        grand_count = vdf.groupby("MONTH")["STORE"].nunique().reindex(v_months).fillna(0).astype(int)
+        v2_display = pd.concat([
+            v2,
+            pd.DataFrame([grand_count.values], columns=v_months, index=["Grand Total"])
+        ])
 
         st.dataframe(
-            heatmap_display,
-            width="stretch"
+            v2_display.style
+                .set_properties(**{"text-align": "center"})
+                .apply(lambda r: ["font-weight:bold; background:#f5f0e0" if r.name == "Grand Total"
+                                  else "" for _ in r], axis=1),
+            use_container_width=True
         )
 
-        st.subheader(
-            "Store Count by Revenue Cohort"
-        )
+        dl2, _ = st.columns([1, 4])
+        with dl2:
+            st.download_button("Download", v2_display.to_csv().encode(),
+                               "store_count_by_rev.csv", "text/csv", key="dlv2")
 
-        store_count = pd.pivot_table(
-            variance_df,
-            values="STORE",
-            index="REVENUE COHORT",
-            columns="MONTH",
-            aggfunc="count"
-        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Variance Insights</span>', unsafe_allow_html=True)
 
-        st.dataframe(
-            store_count,
-            width="stretch"
-        )
+        ic1, ic2, ic3 = st.columns(3)
+        with ic1:
+            st.metric("Avg Variance %", f"{vdf['VARIANCE%'].mean():.2f}%",
+                      help="Variance as % of ideal food cost")
+        with ic2:
+            high_var_stores = vdf[vdf["VARIANCE%"] > 3]["STORE"].nunique()
+            st.metric("Stores > 3% Variance", str(high_var_stores))
+        with ic3:
+            store_avg_var = vdf.groupby("STORE")["VARIANCE%"].mean()
+            worst_store = store_avg_var.idxmax()
+            st.metric("Highest Variance Store", worst_store,
+                      delta=f"{store_avg_var.max():.1f}%", delta_color="inverse")
 
-# ==================================================
-# TAB 3
-# ==================================================
 
-with tab3:
-
-    st.subheader(
-        "Top and Bottom Performing Stores"
-    )
-
-    store_summary = kitchen_df.groupby(
-        "STORE",
-        as_index=False
-    )[[
-        "NET REVENUE",
-        "KITCHEN EBITDA"
-    ]].sum()
-
-    top_stores = store_summary.sort_values(
-        "NET REVENUE",
-        ascending=False
-    ).head(10)
-
-    st.write("Top 10 Stores by Revenue")
-
-    top_chart = px.bar(
-        top_stores,
-        x="STORE",
-        y="NET REVENUE"
-    )
-
-    st.plotly_chart(
-        top_chart,
-        use_container_width=True
-    )
-
-    bottom_stores = store_summary.sort_values(
-        "NET REVENUE",
-        ascending=True
-    ).head(10)
-
-    st.write("Bottom 10 Stores by Revenue")
-
-    bottom_chart = px.bar(
-        bottom_stores,
-        x="STORE",
-        y="NET REVENUE"
-    )
-
-    st.plotly_chart(
-        bottom_chart,
-        use_container_width=True
-    )
-
-    st.markdown("---")
-
-    csv = kitchen_df.to_csv(
-        index=False
-    ).encode("utf-8")
-
-    st.download_button(
-        label="Download Filtered Data",
-        data=csv,
-        file_name="filtered_kitchen_data.csv",
-        mime="text/csv"
-    )
+st.markdown("---")
+st.markdown(
+    '<div style="text-align:center;font-size:11px;color:#aaa;">'
+    'Cloud Kitchen PNL · Internal Ops Dashboard · Cache refreshes every 5 min'
+    '</div>',
+    unsafe_allow_html=True
+)
